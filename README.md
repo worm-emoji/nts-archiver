@@ -28,10 +28,10 @@ bun install
 
 ## Usage
 
-Run the archiver with a show slug or URL:
+Run the archiver with a show slug, show URL, or episode URL:
 
 ```bash
-bun run index.ts <show-slug | show-url> [options]
+bun run index.ts <show-slug | show-url | episode-url> [options]
 ```
 
 ### Examples
@@ -48,12 +48,16 @@ bun run index.ts malibu -c 5
 
 # Download using the show URL
 bun run index.ts https://www.nts.live/shows/malibu
+
+# Download a single episode
+bun run index.ts https://www.nts.live/shows/guests/episodes/oklou-choke-soundscape-15th-april-2025
 ```
 
 ### Arguments
 
 - `<show-slug>`: The slug of the NTS show (e.g., `malibu`)
 - `<show-url>`: The full URL to the NTS show (e.g., `https://www.nts.live/shows/malibu`)
+- `<episode-url>`: The full URL to a specific NTS episode (e.g., `https://www.nts.live/shows/whities-w-tasker/episodes/whities-w-tasker-13th-april-2025`)
 
 ### Options
 

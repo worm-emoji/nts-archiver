@@ -1,5 +1,5 @@
 {
-  "name": "uif2",
+  "name": "nts-archiver",
   "module": "index.ts",
   "type": "module",
   "private": true,

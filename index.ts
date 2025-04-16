@@ -1251,6 +1251,7 @@ ${chalk.bold("Total:")}        ${total} episodes
 function parseArguments(): {
   slug: string;
   options: CliOptions;
+  singleEpisodeUrl: string | null;
 } {
   const args = process.argv.slice(2);
 
@@ -1291,11 +1292,35 @@ function parseArguments(): {
 
   // Extract slug from filtered arguments
   let slugArg = nonOptionArgs[0] || "";
+  let singleEpisodeUrl: string | null = null;
+  let slug = slugArg || ""; // Default to empty string if not provided
 
-  // Check if the slug is a URL and extract the slug part if it matches the NTS show format
-  let slug = slugArg;
-  if (slugArg.startsWith("https://www.nts.live/shows/")) {
-    // Extract the slug from the URL using a URL object
+  // Check if the arg is an episode URL
+  if (slugArg.match(/https:\/\/www\.nts\.live\/shows\/.*\/episodes\/.*/)) {
+    singleEpisodeUrl = slugArg;
+    // Extract show slug from episode URL
+    try {
+      const url = new URL(slugArg);
+      const pathParts = url.pathname.split("/");
+      // Format should be /shows/{show_alias}/episodes/{episode_alias}
+      if (
+        pathParts.length >= 4 &&
+        pathParts[1] === "shows" &&
+        pathParts[3] === "episodes"
+      ) {
+        slug = pathParts[2] || ""; // Still extract the show slug
+      } else {
+        throw new Error(
+          `Invalid NTS episode URL format. Expected format: https://www.nts.live/shows/{show-alias}/episodes/{episode-alias}`
+        );
+      }
+    } catch (error) {
+      throw new Error(
+        `Invalid episode URL: ${slugArg}. Expected format: https://www.nts.live/shows/{show-alias}/episodes/{episode-alias}`
+      );
+    }
+  } else if (slugArg.startsWith("https://www.nts.live/shows/")) {
+    // Extract the slug from the show URL using a URL object
     try {
       const url = new URL(slugArg);
       const pathParts = url.pathname.split("/");
@@ -1315,24 +1340,281 @@ function parseArguments(): {
     }
   }
 
-  return { slug, options };
+  return { slug, options, singleEpisodeUrl };
+}
+
+// Function to fetch a single episode by URL
+async function fetchSingleEpisode(episodeUrl: string): Promise<Episode> {
+  try {
+    // Extract show_alias and episode_alias from URL
+    const url = new URL(episodeUrl);
+    const pathParts = url.pathname.split("/");
+
+    if (
+      pathParts.length < 5 ||
+      pathParts[1] !== "shows" ||
+      pathParts[3] !== "episodes"
+    ) {
+      throw new Error("Invalid episode URL format");
+    }
+
+    const showAlias = pathParts[2];
+    const episodeAlias = pathParts[4];
+
+    if (!showAlias || !episodeAlias) {
+      throw new Error(
+        `Could not extract show alias or episode alias from URL: ${episodeUrl}`
+      );
+    }
+
+    console.log(`Attempting to fetch episode: ${showAlias}/${episodeAlias}`);
+
+    // First method: Direct fetch from the episode page
+    try {
+      // Fetch the episode data
+      const response = await fetch(episodeUrl, {
+        headers: {
+          Accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        console.log(
+          `Page fetch failed: ${response.status} ${response.statusText}`
+        );
+        throw new Error(
+          `Failed to fetch episode page: ${response.status} ${response.statusText}`
+        );
+      }
+
+      const data = (await response.json()) as Record<string, any>;
+
+      // Check if we got a valid episode object
+      if (data.episode && data.episode.name) {
+        console.log(
+          `Successfully found episode data from page: ${data.episode.name}`
+        );
+
+        // Create a minimal Episode object with required fields
+        const episode = data.episode as Episode;
+        // Set default name if it's undefined
+        if (!episode.name) {
+          (episode as any).name = "Unknown Episode";
+        }
+        return episode;
+      }
+
+      console.log("Episode data not found in page response, trying API...");
+    } catch (pageError) {
+      console.log(`Error fetching episode page: ${String(pageError)}`);
+      // Continue to API method
+    }
+
+    // Second method: API fetch (if page fetch failed or didn't have episode data)
+    console.log(`Trying API endpoint for ${showAlias}/${episodeAlias}...`);
+
+    // Try to get episode from API
+    const apiUrl = `https://www.nts.live/api/v2/shows/${showAlias}/episodes/${episodeAlias}`;
+    console.log(`API URL: ${apiUrl}`);
+
+    const apiResponse = await fetch(apiUrl);
+
+    if (!apiResponse.ok) {
+      throw new Error(
+        `Failed to fetch episode from API: ${apiResponse.status} ${apiResponse.statusText}`
+      );
+    }
+
+    const apiData = (await apiResponse.json()) as Record<string, any>;
+    console.log("API response received, checking for episode data...");
+
+    // Debug the API response structure
+    if (apiData) {
+      console.log("API data structure:");
+      console.log(`- Has 'results': ${!!apiData.results}`);
+
+      if (apiData.results) {
+        console.log(`- Results type: ${typeof apiData.results}`);
+        if (Array.isArray(apiData.results)) {
+          console.log(`- Results array length: ${apiData.results.length}`);
+        }
+      }
+    }
+
+    // Handle different response formats from the API
+    if (apiData && apiData.results) {
+      if (Array.isArray(apiData.results) && apiData.results.length > 0) {
+        // Handle case where results is an array
+        const episode = apiData.results[0] as Episode;
+        console.log(
+          `Found episode in API results array: ${episode.name || "Unnamed"}`
+        );
+        if (!episode.name) {
+          (episode as any).name = "Unknown Episode";
+        }
+        return episode;
+      } else {
+        // Handle case where results is an object
+        const episode = apiData.results as Episode;
+        console.log(
+          `Found episode in API results object: ${episode.name || "Unnamed"}`
+        );
+        if (!episode.name) {
+          (episode as any).name = "Unknown Episode";
+        }
+        return episode;
+      }
+    } else if (apiData && apiData.episode) {
+      // Some API endpoints return the episode directly
+      const episode = apiData.episode as Episode;
+      console.log(
+        `Found episode directly in API data: ${episode.name || "Unnamed"}`
+      );
+      if (!episode.name) {
+        (episode as any).name = "Unknown Episode";
+      }
+      return episode;
+    } else if (apiData && apiData.name && apiData.episode_alias) {
+      // The API returned the episode data directly at the top level
+      console.log(
+        `Found episode data at top level: ${apiData.name || "Unnamed"}`
+      );
+      // Use the API data directly as an Episode object
+      const episode = apiData as unknown as Episode;
+      if (!episode.name) {
+        (episode as any).name = "Unknown Episode";
+      }
+      return episode;
+    }
+
+    // If we reach here, we couldn't find episode data in any expected format
+    console.log(
+      "No episode data found in any expected format in the API response"
+    );
+    console.log("API response keys:", Object.keys(apiData || {}).join(", "));
+    throw new Error(
+      "Could not retrieve episode data from NTS API - episode may not exist"
+    );
+  } catch (error) {
+    console.error(chalk.red(`Error fetching episode: ${String(error)}`));
+    throw error;
+  }
+}
+
+// Function to download a single episode
+async function downloadSingleEpisode(
+  episodeUrl: string,
+  options: CliOptions
+): Promise<void> {
+  displayHeader(`Downloading single episode: ${episodeUrl}`);
+
+  try {
+    // Fetch the episode
+    const spinner = ora(`Fetching episode data`).start();
+    const episode = await fetchSingleEpisode(episodeUrl);
+    // Use an explicit string for the name
+    const episodeName = episode.name || "Unknown Episode";
+    spinner.succeed(`Found episode: ${chalk.green(episodeName)}`);
+
+    // Extract show_alias
+    const url = new URL(episodeUrl);
+    const pathParts = url.pathname.split("/");
+    const showAlias = pathParts[2];
+
+    if (!showAlias) {
+      throw new Error("Could not extract show alias from episode URL");
+    }
+
+    // Fetch show metadata (needed for artwork and other details)
+    spinner.text = `Fetching show metadata`;
+    spinner.start();
+    const showData = await fetchShowMetadata(showAlias);
+    // Use an explicit string for the name
+    const showName = showData.name || "Unknown Show";
+    spinner.succeed(`Found show: ${chalk.green(showName)}`);
+
+    // Create output directory based on show slug
+    const outputDir = path.join(process.cwd(), showAlias);
+    if (!fs.existsSync(outputDir)) {
+      fs.mkdirSync(outputDir, { recursive: true });
+    }
+
+    // Load download registry
+    const registry = getDownloadRegistry(outputDir);
+
+    // Create a progress bar for the single episode
+    const progressBar = new cliProgress.SingleBar(
+      {
+        format: `${chalk.cyan("{bar}")} | {percentage}% | ${chalk.yellow(
+          "{status}"
+        )} | {name}`,
+        barCompleteChar: "\u2588",
+        barIncompleteChar: "\u2591",
+        hideCursor: true,
+      },
+      cliProgress.Presets.shades_classic
+    );
+
+    progressBar.start(1, 0, {
+      status: "WAITING",
+      name: episodeName,
+    });
+
+    // Download the episode
+    try {
+      await downloadEpisode(
+        episode,
+        showData,
+        outputDir,
+        1, // Track number
+        registry,
+        progressBar,
+        options,
+        1, // Episode index (not important here)
+        1 // Concurrent position
+      );
+
+      progressBar.stop();
+
+      // Display summary for the single episode
+      displaySummary({
+        downloaded: 1,
+        skipped: 0,
+        failed: 0,
+        showName: showName,
+      });
+    } catch (error) {
+      progressBar.stop();
+      throw error;
+    }
+  } catch (error) {
+    console.error(chalk.red(`Error: ${String(error)}`));
+    process.exit(1);
+  }
 }
 
 async function main() {
   // Parse command line arguments
-  const { slug, options } = parseArguments();
+  const { slug, options, singleEpisodeUrl } = parseArguments();
 
   if (!slug) {
     console.error(
       chalk.red("Please provide a show slug or URL as an argument")
     );
     console.error(
-      chalk.yellow("Usage: bun run index.ts <show-slug | show-url> [options]")
+      chalk.yellow(
+        "Usage: bun run index.ts <show-slug | show-url | episode-url> [options]"
+      )
     );
     console.error(chalk.yellow("Examples:"));
     console.error(chalk.yellow("  bun run index.ts malibu"));
     console.error(
       chalk.yellow("  bun run index.ts https://www.nts.live/shows/malibu")
+    );
+    console.error(
+      chalk.yellow(
+        "  bun run index.ts https://www.nts.live/shows/malibu/episodes/malibu-5th-july-2023"
+      )
     );
     console.error(chalk.yellow("Options:"));
     console.error(
@@ -1344,6 +1626,12 @@ async function main() {
       )
     );
     process.exit(1);
+  }
+
+  // Handle single episode download if URL is provided
+  if (singleEpisodeUrl) {
+    await downloadSingleEpisode(singleEpisodeUrl, options);
+    return;
   }
 
   const headerText = `Archiving NTS show: ${slug} (Concurrency: ${
